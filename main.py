@@ -4,79 +4,83 @@ import os
 import time
 import threading
 
-# =========================
-# CONFIG
-# =========================
+# ============== CONFIG =================
 API_URL = "https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions"
 API_KEY = os.getenv("ARK_API_KEY")
+
 MODEL = "seed-1-6-flash-250715"
 
-MAX_TPM = 800_000
-MAX_RPM = 15_000
+TARGET_TOKENS = 20_000_000
+RUN_SECONDS = 3600  # 1 hour
 
-TARGET_TPM = int(MAX_TPM * 0.92)   # safety buffer (92%)
-EST_TOKENS_PER_REQ = 90_000        # based on your logs
+REQUEST_INTERVAL = 16     # seconds between requests
+CONCURRENCY = 3           # safe & stable
 
-RUN_SECONDS = 6 * 3600             # 6 hours
-CONCURRENCY = 10                   # tuned for TPM, not RPM
-
-# =========================
-HEADERS = {
+# ======================================
+headers = {
     "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json",
 }
 
-PROMPT = (
-    "Write an extremely long, technical, exhaustive narrative about AI systems, "
-    "covering architecture, training, scaling laws, deployment, optimization, "
-    "alignment, safety, infrastructure, economics, and future evolution."
+prompt = (
+    "Write an extremely long, highly detailed technical essay about "
+    "AI systems, scaling laws, training infrastructure, inference optimization, "
+    "safety, alignment, economics, and future research directions."
 )
 
-PAYLOAD = {
+payload = {
     "model": MODEL,
-    "messages": [{"role": "user", "content": PROMPT}],
+    "messages": [{"role": "user", "content": prompt}],
     "max_tokens": 100000,
 }
 
-# =========================
 lock = threading.Lock()
 total_tokens = 0
-total_requests = 0
 start_time = time.time()
 
-# =========================
-def allowed_to_send():
-    elapsed = time.time() - start_time
-    if elapsed < 5:
-        return True
-
-    with lock:
-        tpm = total_tokens / elapsed * 60
-        rpm = total_requests / elapsed * 60
-
-    return tpm < TARGET_TPM and rpm < MAX_RPM * 0.95
-
-
-def call_model(i):
-    global total_tokens, total_requests
-
+# ======================================
+def call_seed16(i):
+    global total_tokens
     try:
-        r = requests.post(
-            API_URL,
-            headers=HEADERS,
-            json=PAYLOAD,
-            timeout=180
-        )
+        r = requests.post(API_URL, headers=headers, json=payload, timeout=180)
         data = r.json()
         usage = data.get("usage", {}).get("total_tokens", 0)
 
         with lock:
             total_tokens += usage
-            total_requests += 1
             elapsed = time.time() - start_time
             tpm = int(total_tokens / elapsed * 60)
-            rpm = int(total_requests / elapsed * 60)
 
         print(
             f"[Req {i}] +{usage:,} tokens | "
-            f"T
+            f"Total={total_tokens:,} | TPM≈{tpm:,}"
+        )
+    except Exception as e:
+        print(f"[Req {i}] ❌ {e}")
+
+# ======================================
+def run_load():
+    i = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
+        while True:
+            elapsed = time.time() - start_time
+
+            if elapsed >= RUN_SECONDS:
+                print("⏱ 1 hour reached")
+                break
+
+            if total_tokens >= TARGET_TOKENS:
+                print("🎯 20M tokens reached")
+                break
+
+            executor.submit(call_seed16, i)
+            i += 1
+            time.sleep(REQUEST_INTERVAL)
+
+    print("\n✅ DONE")
+    print(f"🔥 Total tokens: {total_tokens:,}")
+    print(f"⏱ Runtime: {int((time.time()-start_time)/60)} minutes")
+
+# ======================================
+if __name__ == "__main__":
+    run_load()
